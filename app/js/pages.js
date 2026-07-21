@@ -7,13 +7,18 @@
 
 import {
   getAll, getAllByIndex, add, del, bulkAdd, bulkPut, getSetting, setSetting,
+  clear, STORE_NAMES,
 } from './db.js';
 import {
   getTodayTask, markLearned, recordAnswer, bumpCheckin, createProgress,
   getStreak, todayStr, shiftDay, isActiveCheckin, MASTERED_STAGE,
 } from './scheduler.js';
+import {
+  XP_RULES, BADGES, levelForXP, awardXP, awardDailyDone, awardStreakMilestone, checkBadges,
+} from './gamification.js';
 import { speak } from './speech.js';
 import { parseImportText } from './importer.js';
+import { APP_VERSION } from './main.js';
 
 /** HTML 转义（词书内容来自用户导入，必须转义后插入 DOM） */
 function escapeHtml(s) {
@@ -55,7 +60,7 @@ export async function renderRoute(route, container) {
     return renderPlaceholder(container, '词书详情', '词书详情页（分组/搜索/状态标记）将于 M5 实现');
   }
   if (path === '/stats') return renderStats(container);
-  if (path === '/settings') return renderPlaceholder(container, '我的', '设置页将于 M4 实现');
+  if (path === '/settings') return renderSettings(container);
   return renderToday(container);
 }
 
@@ -100,14 +105,22 @@ async function renderToday(container) {
     renderNoBook(container, '今日');
     return;
   }
-  const [task, streak] = await Promise.all([getTodayTask(book.id), getStreak()]);
+  const [task, streak, xp] = await Promise.all([
+    getTodayTask(book.id),
+    getStreak(),
+    getSetting('xp', 0),
+  ]);
+  const lv = levelForXP(xp);
+  const xpPct = Math.round(lv.progress * 100);
   container.innerHTML = `
     <div class="home-header">
-      <!-- M4：此处补充等级称号 + XP 进度条（§4.3-A、§6） -->
       <div class="home-topline">
-        <span class="home-sub">当前词书</span>
+        <span class="level-title">Lv.${lv.level} ${lv.title}</span>
         <span class="streak-flame" title="连续打卡">🔥 ${streak} 天</span>
       </div>
+      <div class="xp-bar"><div class="xp-bar-fill" style="width:${xpPct}%"></div></div>
+      <div class="xp-text">${xp} XP${lv.next != null ? ` · 距下一级还需 ${lv.next - xp}` : ' · 已满级'}</div>
+      <div class="home-sub">当前词书</div>
       <div class="home-book">${escapeHtml(book.name)}</div>
     </div>
     <div class="card">
@@ -118,6 +131,50 @@ async function renderToday(container) {
       <a class="btn btn-outline btn-block" href="#/review">开始复习（${task.reviews.length}）</a>
     </div>
   `;
+}
+
+/* ==================== 激励反馈（M4，§4.3） ==================== */
+
+/** 加 XP；升级时弹出全屏祝贺层 1.5 秒（§4.3-A） */
+async function gainXP(amount) {
+  const r = await awardXP(amount);
+  if (r && r.leveledUp) showLevelUp(r.to);
+  return r;
+}
+
+/** 徽章检查并弹出新解锁提示（答题结算 / 打卡写入后调用，§4.3-B） */
+async function notifyBadges() {
+  try {
+    const fresh = await checkBadges();
+    for (const b of fresh) showBadgeToast(b);
+    return fresh;
+  } catch {
+    return []; // 激励模块失败不影响学习主流程
+  }
+}
+
+/** 升级全屏祝贺层：称号缩放弹入，1.5 秒自动消失（§4.3-A、§6） */
+function showLevelUp(level) {
+  const overlay = document.createElement('div');
+  overlay.className = 'levelup-overlay';
+  overlay.innerHTML = `
+    <div class="levelup-card">
+      <div class="levelup-emoji">🎊</div>
+      <div class="levelup-title">升级啦！</div>
+      <div class="levelup-level">Lv.${level.level} ${level.title}</div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  setTimeout(() => overlay.remove(), 1500);
+}
+
+/** 新解锁徽章 toast（§4.3-B） */
+function showBadgeToast(badge) {
+  const toast = document.createElement('div');
+  toast.className = 'badge-toast';
+  toast.textContent = `${badge.emoji} 解锁徽章：${badge.name}`;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2500);
 }
 
 /* ==================== 测验会话（学习/复习共用） ==================== */
@@ -305,6 +362,8 @@ async function runStudySession(container, queue, allWords, autoSpeak) {
     await markLearned(word.id, Date.now());
     // checkins 只记 newLearned；学习测验的对错不计入 correct/wrong（M3 统计正确率以复习答题为准）
     await bumpCheckin('newLearned', 1);
+    if (ok) await gainXP(XP_RULES.learnNew); // 新学一词并通过测验 +10（§4.3-A）
+    await notifyBadges();
   }
   if (!container.isConnected) return;
   if (await celebrateIfDone(container)) return; // 今日任务全部完成 → 彩带 + 打卡成功
@@ -354,6 +413,8 @@ async function runReviewSession(container, queue, allWords) {
     await recordAnswer(word.id, ok, Date.now());
     await bumpCheckin('reviewed', 1);
     await bumpCheckin(ok ? 'correct' : 'wrong', 1);
+    await gainXP(ok ? XP_RULES.reviewRight : XP_RULES.reviewWrong); // 复习答对 +5 / 答错鼓励 +1
+    await notifyBadges();
   }
   if (!container.isConnected) return;
   // 队列清空 → 若今日任务全部完成则触发打卡庆祝（§4.3-C），否则回今日页（§5）
@@ -374,7 +435,8 @@ async function runReviewSession(container, queue, allWords) {
 /* ==================== 打卡庆祝（M3，§3 / §4.3-C） ==================== */
 
 /**
- * 会话结束后检查今日任务：新学与到期复习均清空 → 全屏彩带 + 「打卡成功」卡。
+ * 会话结束后检查今日任务：新学与到期复习均清空 → 完成当日任务奖励（§4.3-A）
+ * + 全屏彩带 + 「打卡成功」卡（§4.3-C）。
  * @returns {Promise<boolean>} 是否已展示庆祝层
  */
 async function celebrateIfDone(container) {
@@ -382,12 +444,19 @@ async function celebrateIfDone(container) {
   if (!book) return false;
   const task = await getTodayTask(book.id);
   if (task.newWords.length > 0 || task.reviews.length > 0) return false;
-  showCheckinCelebration(container);
+  // 完成当日全部任务 +20（每日一次）；连续打卡每满 7 天 +50（每档一次）
+  const done = await awardDailyDone().catch(() => null);
+  if (done && done.leveledUp) showLevelUp(done.to);
+  const streak = await getStreak();
+  const milestone = await awardStreakMilestone(streak).catch(() => null);
+  if (milestone && milestone.leveledUp) showLevelUp(milestone.to);
+  const fresh = await notifyBadges();
+  showCheckinCelebration(container, fresh);
   return true;
 }
 
-/** 全屏彩带动画（纯 CSS 实现，不引库，§4.3-C）+ 「打卡成功」卡 */
-function showCheckinCelebration(container) {
+/** 全屏彩带动画（纯 CSS 实现，不引库，§4.3-C）+ 「打卡成功」卡（附新解锁徽章） */
+function showCheckinCelebration(container, freshBadges = []) {
   const colors = ['#0d9488', '#f59e0b', '#22c55e', '#ef4444', '#3b82f6', '#ec4899'];
   const pieces = Array.from({ length: 60 }, (_, i) => {
     const left = (Math.random() * 100).toFixed(1);
@@ -405,6 +474,7 @@ function showCheckinCelebration(container) {
         <div class="empty-icon">🎉</div>
         <h2 class="checkin-title">打卡成功</h2>
         <p class="text-secondary">今日任务已全部完成，明天也要继续哦</p>
+        ${freshBadges.map((b) => `<div class="checkin-badge">${b.emoji} 解锁徽章：${escapeHtml(b.name)}</div>`).join('')}
         <a class="btn btn-primary btn-block" href="#/">返回今日</a>
       </div>
     </div>
@@ -414,10 +484,11 @@ function showCheckinCelebration(container) {
 /* ==================== 统计页（M3：打卡日历 / 累计学习 / 掌握 / 今日正确率；徽章墙 M4、错词本 M6 追加） ==================== */
 
 async function renderStats(container) {
-  const [checkins, progressAll, streak] = await Promise.all([
+  const [checkins, progressAll, streak, unlocked] = await Promise.all([
     getAll('checkins'),
     getAll('progress'),
     getStreak(),
+    getAll('badges'),
   ]);
   const learned = progressAll.filter((p) => !p.isNew).length;
   const mastered = progressAll.filter((p) => p.stage >= MASTERED_STAGE).length;
@@ -442,6 +513,18 @@ async function renderStats(container) {
       <div class="stat-label">${label}</div>
     </div>`;
 
+  // 徽章墙：未解锁灰色 + 条件说明（§4.3-B）
+  const unlockedIds = new Set(unlocked.map((b) => b.badgeId));
+  const badgeWall = BADGES.map((b) => {
+    const has = unlockedIds.has(b.id);
+    return `
+      <div class="badge ${has ? 'unlocked' : 'locked'}" title="${escapeHtml(b.desc)}">
+        <div class="badge-emoji">${b.emoji}</div>
+        <div class="badge-name">${escapeHtml(b.name)}</div>
+        <div class="badge-desc">${escapeHtml(b.desc)}</div>
+      </div>`;
+  }).join('');
+
   container.innerHTML = `
     <h1 class="page-title">统计</h1>
     <div class="card">
@@ -454,32 +537,75 @@ async function renderStats(container) {
       ${stat(mastered, '已掌握（词）')}
       ${stat(accuracy == null ? '—' : `${accuracy}%`, '今日正确率')}
     </div>
-    <!-- M4：徽章墙（§4.3-B）；M6：错词本（§4.6） -->
+    <div class="card">
+      <h2 class="card-title">徽章墙</h2>
+      <div class="badge-grid">${badgeWall}</div>
+    </div>
+    <!-- M6：错词本（§4.6） -->
   `;
 }
 
-/* ==================== 词书页（M2 基础版：列表 + 设为当前 + 删除 + 临时导入；进度环 M4、详情 M5） ==================== */
+/* ==================== 词书页（M4：列表 + 掌握进度环 + 设为当前 + 删除；导入已移入设置页 §8-2；详情 M5） ==================== */
+
+/** 环形进度（SVG circle stroke-dasharray，§6） */
+function ringHtml(pct, size = 44) {
+  const r = (size - 10) / 2;
+  const c = 2 * Math.PI * r;
+  const offset = c * (1 - Math.min(1, Math.max(0, pct)));
+  return `
+    <svg class="ring" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="掌握进度 ${Math.round(pct * 100)}%">
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="#e5e7eb" stroke-width="5" fill="none"/>
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" stroke="var(--color-primary)" stroke-width="5" fill="none"
+              stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"
+              transform="rotate(-90 ${size / 2} ${size / 2})"/>
+      <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" class="ring-text">${Math.round(pct * 100)}%</text>
+    </svg>`;
+}
+
+/** 各词书掌握率：Map(bookId → 0..1) */
+async function getBookRates() {
+  const [words, progressAll] = await Promise.all([getAll('words'), getAll('progress')]);
+  const mastered = new Set(progressAll.filter((p) => p.stage >= MASTERED_STAGE).map((p) => p.wordId));
+  const total = new Map();
+  const done = new Map();
+  for (const w of words) {
+    total.set(w.bookId, (total.get(w.bookId) || 0) + 1);
+    if (mastered.has(w.id)) done.set(w.bookId, (done.get(w.bookId) || 0) + 1);
+  }
+  const rates = new Map();
+  for (const [bookId, n] of total) {
+    rates.set(bookId, n > 0 ? (done.get(bookId) || 0) / n : 0);
+  }
+  return rates;
+}
 
 async function renderBooks(container, notice = '') {
-  const [books, activeBookId] = await Promise.all([getAll('books'), getSetting('activeBookId')]);
+  const [books, activeBookId, rates] = await Promise.all([
+    getAll('books'),
+    getSetting('activeBookId'),
+    getBookRates(),
+  ]);
   const listHtml = books.length === 0
     ? `
       <div class="empty-state">
         <div class="empty-icon">📖</div>
-        <p>还没有词书，先在下方导入一本</p>
+        <p>还没有词书，先去导入一本吧</p>
+        <a class="btn btn-primary" href="#/settings">去导入</a>
       </div>
     `
     : books.map((b) => `
-      <div class="card">
-        <div><strong>${escapeHtml(b.name)}</strong></div>
-        <div class="book-meta">
-          ${b.wordCount} 词 · 来源：${b.source === 'builtin' ? '内置' : '导入'}${b.id === activeBookId ? ' · <span class="book-active">当前词书</span>' : ''}
-        </div>
-        <!-- M4：掌握进度环（SVG circle，§6） -->
-        <div class="book-actions">
-          ${b.id === activeBookId ? '' : `<button class="btn btn-outline btn-sm" type="button" data-act="use" data-id="${b.id}">设为当前词书</button>`}
-          <button class="btn btn-outline btn-sm" type="button" data-act="detail" data-id="${b.id}">详情（M5）</button>
-          <button class="btn btn-danger btn-sm" type="button" data-act="del" data-id="${b.id}">删除</button>
+      <div class="card book-card">
+        <div class="book-ring">${ringHtml(rates.get(b.id) || 0)}</div>
+        <div class="book-info">
+          <div><strong>${escapeHtml(b.name)}</strong></div>
+          <div class="book-meta">
+            ${b.wordCount} 词 · 来源：${b.source === 'builtin' ? '内置' : '导入'}${b.id === activeBookId ? ' · <span class="book-active">当前词书</span>' : ''}
+          </div>
+          <div class="book-actions">
+            ${b.id === activeBookId ? '' : `<button class="btn btn-outline btn-sm" type="button" data-act="use" data-id="${b.id}">设为当前词书</button>`}
+            <button class="btn btn-outline btn-sm" type="button" data-act="detail" data-id="${b.id}">详情</button>
+            <button class="btn btn-danger btn-sm" type="button" data-act="del" data-id="${b.id}">删除</button>
+          </div>
         </div>
       </div>
     `).join('');
@@ -488,14 +614,7 @@ async function renderBooks(container, notice = '') {
     <h1 class="page-title">词书</h1>
     ${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ''}
     ${listHtml}
-    <div class="card">
-      <strong>导入词书</strong>
-      <p class="text-secondary import-tip">临时入口，M4 移入「我的 → 设置」（§8 开发须知 2）。支持 JSON / CSV / TXT（§4.2）。</p>
-      <input class="spell-input" id="importName" type="text" placeholder="词书名称（JSON 自动读取，CSV/TXT 用此项）">
-      <input id="importFile" type="file" accept=".json,.csv,.txt">
-      <textarea class="import-textarea" id="importText" placeholder="或在此粘贴词表文本"></textarea>
-      <button class="btn btn-primary btn-block" id="importBtn" type="button">导入</button>
-    </div>
+    ${books.length > 0 ? '<p class="text-secondary import-goto">要导入新词书？请到 <a href="#/settings">我的 → 词书管理</a></p>' : ''}
   `;
 
   container.querySelectorAll('[data-act="use"]').forEach((btn) => {
@@ -517,36 +636,6 @@ async function renderBooks(container, notice = '') {
       await deleteBook(id, activeBookId);
       await renderBooks(container, '词书已删除');
     });
-  });
-
-  const fileInput = container.querySelector('#importFile');
-  fileInput.addEventListener('change', async () => {
-    const file = fileInput.files && fileInput.files[0];
-    if (!file) return;
-    container.querySelector('#importText').value = await file.text();
-    const nameInput = container.querySelector('#importName');
-    if (!nameInput.value) nameInput.value = file.name.replace(/\.[^.]+$/, '');
-  });
-
-  container.querySelector('#importBtn').addEventListener('click', async () => {
-    const text = container.querySelector('#importText').value;
-    const name = container.querySelector('#importName').value.trim();
-    if (!text.trim()) {
-      await renderBooks(container, '请先选择文件或粘贴文本');
-      return;
-    }
-    try {
-      const result = parseImportText(text, { name });
-      if (result.success === 0) {
-        await renderBooks(container, `导入失败：无有效词条（无效行 ${result.invalid}）`);
-        return;
-      }
-      await importBook(result);
-      // §4.2 结果提示：成功 N 词、去重跳过 X、无效行 Y
-      await renderBooks(container, `导入完成：成功 ${result.success} 词、去重跳过 ${result.duplicates}、无效行 ${result.invalid}`);
-    } catch (err) {
-      await renderBooks(container, `导入失败：${err && err.message ? err.message : '未知错误'}`);
-    }
   });
 }
 
@@ -583,4 +672,190 @@ async function deleteBook(bookId, activeBookId) {
   await Promise.all(words.flatMap((w) => [del('words', w.id), del('progress', w.id)]));
   await del('books', bookId);
   if (activeBookId === bookId) await setSetting('activeBookId', null);
+}
+
+/* ==================== 设置页（M4，§5 #/settings 四个分组） ==================== */
+
+async function renderSettings(container, notice = '') {
+  const [dailyNew, dailyReviewCap, autoSpeak, voice, books, wordTotal] = await Promise.all([
+    getSetting('dailyNew', 20),
+    getSetting('dailyReviewCap', 100),
+    getSetting('autoSpeak', true),
+    getSetting('voice', 'en-US'),
+    getAll('books'),
+    getAll('words').then((ws) => ws.length),
+  ]);
+
+  container.innerHTML = `
+    <h1 class="page-title">我的</h1>
+    ${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ''}
+
+    <div class="card">
+      <h2 class="card-title">学习设置</h2>
+      <div class="setting-row">
+        <label for="setDailyNew">每日新学数量（5–50）</label>
+        <input id="setDailyNew" class="setting-num" type="number" min="5" max="50" value="${dailyNew}">
+      </div>
+      <div class="setting-row">
+        <label for="setDailyReviewCap">每日复习上限（20–300）</label>
+        <input id="setDailyReviewCap" class="setting-num" type="number" min="20" max="300" value="${dailyReviewCap}">
+      </div>
+      <div class="setting-row">
+        <label for="setAutoSpeak">学习卡自动发音</label>
+        <input id="setAutoSpeak" type="checkbox" ${autoSpeak ? 'checked' : ''}>
+      </div>
+      <div class="setting-row">
+        <label for="setVoice">发音偏好</label>
+        <select id="setVoice">
+          <option value="en-US" ${voice === 'en-US' ? 'selected' : ''}>美音（en-US）</option>
+          <option value="en-GB" ${voice === 'en-GB' ? 'selected' : ''}>英音（en-GB）</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">词书管理</h2>
+      <div class="dropzone" id="dropzone">拖拽词书文件到这里（JSON / CSV / TXT）</div>
+      <input class="spell-input" id="importName" type="text" placeholder="词书名称（JSON 自动读取，CSV/TXT 用此项）">
+      <input id="importFile" type="file" accept=".json,.csv,.txt">
+      <textarea class="import-textarea" id="importText" placeholder="或在此粘贴词表文本"></textarea>
+      <button class="btn btn-primary btn-block" id="importBtn" type="button">导入词书</button>
+      ${books.length > 0 ? `
+        <div class="setting-booklist">
+          ${books.map((b) => `<div class="setting-row"><span>${escapeHtml(b.name)}</span><span class="text-secondary">${b.wordCount} 词</span></div>`).join('')}
+        </div>
+        <a class="btn btn-outline btn-block" href="#/books">查看词书页</a>
+      ` : ''}
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">数据</h2>
+      <div class="btn-stack">
+        <button class="btn btn-outline btn-block" id="exportBtn" type="button">导出备份（JSON）</button>
+        <button class="btn btn-outline btn-block" id="restoreBtn" type="button">导入备份（覆盖恢复）</button>
+        <input id="restoreFile" type="file" accept=".json" hidden>
+        <button class="btn btn-danger btn-block" id="clearBtn" type="button">清空全部数据</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="card-title">关于</h2>
+      <div class="setting-row"><span>应用</span><span>单词通 ${escapeHtml(APP_VERSION)}</span></div>
+      <div class="setting-row"><span>词库</span><span>${books.length} 本词书 · ${wordTotal} 词</span></div>
+      <p class="text-secondary about-text">所有数据仅保存在本机浏览器（IndexedDB），不上传任何服务器；清除浏览器数据会丢失进度，请定期导出备份。</p>
+      <p class="text-secondary about-text">词根词缀数据（M6）为项目组参考 word-root-workshop（github.com/joeseesun/word-root-workshop）、engra（github.com/eslsoft/engra）的整理思路人工编写，未直接复制其数据；拆解算法思路参考 find-roots-of-word（github.com/excing/find-roots-of-word）。</p>
+    </div>
+  `;
+
+  // ---- 学习设置：实时生效 ----
+  const clamp = (v, lo, hi, dft) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return dft;
+    return Math.min(hi, Math.max(lo, Math.round(n)));
+  };
+  container.querySelector('#setDailyNew').addEventListener('change', async (e) => {
+    const v = clamp(e.target.value, 5, 50, 20);
+    e.target.value = v;
+    await setSetting('dailyNew', v);
+  });
+  container.querySelector('#setDailyReviewCap').addEventListener('change', async (e) => {
+    const v = clamp(e.target.value, 20, 300, 100);
+    e.target.value = v;
+    await setSetting('dailyReviewCap', v);
+  });
+  container.querySelector('#setAutoSpeak').addEventListener('change', async (e) => {
+    await setSetting('autoSpeak', e.target.checked);
+  });
+  container.querySelector('#setVoice').addEventListener('change', async (e) => {
+    await setSetting('voice', e.target.value);
+  });
+
+  // ---- 词书导入：文件 / 拖拽 / 粘贴（§4.2） ----
+  const fileInput = container.querySelector('#importFile');
+  const textArea = container.querySelector('#importText');
+  const nameInput = container.querySelector('#importName');
+  const fillFromFile = async (file) => {
+    if (!file) return;
+    textArea.value = await file.text();
+    if (!nameInput.value) nameInput.value = file.name.replace(/\.[^.]+$/, '');
+  };
+  fileInput.addEventListener('change', () => fillFromFile(fileInput.files && fileInput.files[0]));
+  const dz = container.querySelector('#dropzone');
+  dz.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dz.classList.add('over');
+  });
+  dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+  dz.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    dz.classList.remove('over');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    await fillFromFile(file);
+  });
+
+  container.querySelector('#importBtn').addEventListener('click', async () => {
+    const text = textArea.value;
+    const name = nameInput.value.trim();
+    if (!text.trim()) {
+      await renderSettings(container, '请先选择文件或粘贴文本');
+      return;
+    }
+    try {
+      const result = parseImportText(text, { name });
+      if (result.success === 0) {
+        await renderSettings(container, `导入失败：无有效词条（无效行 ${result.invalid}）`);
+        return;
+      }
+      await importBook(result);
+      // §4.2 结果提示：成功 N 词、去重跳过 X、无效行 Y
+      await renderSettings(container, `导入完成：成功 ${result.success} 词、去重跳过 ${result.duplicates}、无效行 ${result.invalid}`);
+    } catch (err) {
+      await renderSettings(container, `导入失败：${err && err.message ? err.message : '未知错误'}`);
+    }
+  });
+
+  // ---- 数据：导出备份 / 导入备份 / 清空全部 ----
+  container.querySelector('#exportBtn').addEventListener('click', async () => {
+    const stores = {};
+    for (const s of STORE_NAMES) stores[s] = await getAll(s);
+    const payload = { app: 'wordmaster', version: APP_VERSION, exportedAt: Date.now(), stores };
+    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `wordmaster-backup-${todayStr()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  const restoreFile = container.querySelector('#restoreFile');
+  container.querySelector('#restoreBtn').addEventListener('click', () => restoreFile.click());
+  restoreFile.addEventListener('change', async () => {
+    const file = restoreFile.files && restoreFile.files[0];
+    if (!file) return;
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      await renderSettings(container, '导入备份失败：文件不是合法 JSON');
+      return;
+    }
+    if (!payload || typeof payload !== 'object' || !payload.stores || typeof payload.stores !== 'object') {
+      await renderSettings(container, '导入备份失败：备份文件格式不正确');
+      return;
+    }
+    if (!window.confirm('导入备份将覆盖当前全部数据，确定继续？')) return;
+    for (const s of STORE_NAMES) await clear(s);
+    for (const s of STORE_NAMES) {
+      const rows = Array.isArray(payload.stores[s]) ? payload.stores[s] : [];
+      if (rows.length > 0) await bulkPut(s, rows); // put 保留原 key，完整还愿进度/自增 id
+    }
+    await renderSettings(container, '备份已恢复');
+  });
+
+  container.querySelector('#clearBtn').addEventListener('click', async () => {
+    if (!window.confirm('确定清空全部数据？词书、进度、打卡、徽章都会删除！')) return;
+    if (!window.confirm('再次确认：此操作不可恢复（建议先导出备份）。继续清空？')) return;
+    for (const s of STORE_NAMES) await clear(s);
+    await renderSettings(container, '全部数据已清空');
+  });
 }

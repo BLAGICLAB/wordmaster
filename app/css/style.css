@@ -378,3 +378,124 @@ body {
 .stat-card { margin-bottom: 0; text-align: center; }
 .stat-num { font-size: 24px; font-weight: 700; color: var(--color-primary); }
 .stat-label { font-size: 13px; color: var(--color-text-secondary); margin-top: 2px; }
+
+/* ---------- M4：激励 / 设置页 / 词书进度环 ---------- */
+.level-title { font-size: 15px; font-weight: 700; }
+.xp-text { font-size: 12px; opacity: .85; margin: 6px 0 12px; }
+.home-header .xp-bar { margin-top: 10px; }
+
+/* 升级全屏祝贺层（§4.3-A，1.5 秒） */
+.levelup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  animation: page-fade-in 150ms ease-out;
+}
+.levelup-card {
+  background: var(--color-card);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 32px 44px;
+  text-align: center;
+  animation: pop-in 300ms ease;
+}
+.levelup-emoji { font-size: 48px; }
+.levelup-title { font-size: 18px; font-weight: 700; margin-top: 8px; }
+.levelup-level { color: var(--color-accent); font-weight: 700; margin-top: 4px; }
+
+/* 徽章 toast（§4.3-B） */
+.badge-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  background: var(--color-text);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  z-index: 300;
+  box-shadow: var(--shadow-card);
+  animation: toast-in 200ms ease;
+}
+@keyframes toast-in {
+  from { transform: translate(-50%, 12px); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+.checkin-badge {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-button);
+  background: #fffbeb;
+  color: #b45309;
+  font-weight: 600;
+}
+
+/* 徽章墙（§4.3-B：未解锁灰色 + 条件说明） */
+.badge-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.badge {
+  text-align: center;
+  padding: 14px 8px;
+  border-radius: var(--radius-card);
+  background: var(--color-bg);
+}
+.badge.locked { opacity: .45; filter: grayscale(1); }
+.badge-emoji { font-size: 28px; }
+.badge-name { font-weight: 600; font-size: 14px; margin-top: 4px; }
+.badge-desc { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; }
+
+/* 词书列表：进度环 + 信息横排 */
+.book-card { display: flex; gap: 14px; align-items: flex-start; }
+.book-ring { flex: none; }
+.ring-text { font-size: 10px; fill: var(--color-text-secondary); }
+.book-info { flex: 1; min-width: 0; }
+.import-goto { text-align: center; font-size: 14px; }
+.import-goto a { color: var(--color-primary); }
+
+/* 设置页 */
+.setting-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-bg);
+  font-size: 15px;
+}
+.setting-row:last-child { border-bottom: none; }
+.setting-num {
+  width: 84px;
+  padding: 6px 10px;
+  font-size: 15px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: var(--radius-button);
+  text-align: right;
+}
+.setting-row select {
+  padding: 6px 10px;
+  font-size: 14px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: var(--radius-button);
+  background: #fff;
+}
+.setting-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--color-primary); }
+.setting-booklist { margin: 14px 0 10px; }
+.about-text { font-size: 13px; margin-top: 8px; }
+.dropzone {
+  border: 2px dashed #cbd5e1;
+  border-radius: var(--radius-button);
+  padding: 18px;
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.dropzone.over { border-color: var(--color-primary); background: #f0fdfa; color: var(--color-primary); }
