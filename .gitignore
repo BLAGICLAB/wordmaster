@@ -1,0 +1,25 @@
+# Node test artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local dev overrides
+.env
+.env.local
+*.local
+
+# Build artifacts (none expected for vanilla JS, but just in case)
+/dist/
+/build/
