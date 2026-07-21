@@ -23,7 +23,8 @@ function router() {
   const route = currentRoute();
   const page = document.getElementById('page');
   if (!page) return;
-  renderRoute(route, page);
+  // renderRoute 为异步（M2 起页面需读 IndexedDB），失败仅记日志不阻塞路由
+  Promise.resolve(renderRoute(route, page)).catch((err) => console.error('[router]', err));
   highlightTab(route);
 }
 

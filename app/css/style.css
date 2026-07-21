@@ -225,3 +225,82 @@ body {
 }
 
 .text-secondary { color: var(--color-text-secondary); }
+
+/* ---------- M2 页面补充样式（今日/学习/复习/词书；M4 统一美化时整合） ---------- */
+.home-sub { font-size: 13px; opacity: .85; }
+.home-book { font-size: 22px; font-weight: 700; margin-top: 2px; }
+.task-counts { font-size: 16px; }
+.btn-stack > * + * { margin-top: 10px; }
+
+.quiz-count {
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.study-card { text-align: center; }
+.study-pos { margin-top: 8px; }
+.study-meaning { font-size: 18px; margin: 12px 0; }
+.quiz-word { cursor: pointer; }
+.quiz-meaning { font-size: 20px; font-weight: 600; text-align: center; }
+.quiz-pos { text-align: center; margin-top: 4px; }
+.quiz-feedback { margin-top: 12px; }
+.session-done { margin: 12px 0 16px; }
+
+/* 圆形发音按钮（§6 学习卡要点） */
+.pronounce-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-primary);
+  background: var(--color-card);
+  color: var(--color-primary);
+  font-size: 20px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 4px 0;
+  transition: transform 100ms ease;
+}
+.pronounce-btn:active { transform: scale(.92); }
+
+/* 拼写输入框 */
+.spell-input {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 18px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: var(--radius-button);
+  margin-bottom: 12px;
+  outline: none;
+}
+.spell-input:focus { border-color: var(--color-primary); }
+
+/* 词书页 */
+.book-meta { color: var(--color-text-secondary); font-size: 14px; margin-top: 4px; }
+.book-active { color: var(--color-primary); font-weight: 600; }
+.book-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.btn-sm { padding: 8px 14px; font-size: 14px; }
+.btn-danger { background: var(--color-danger); color: #fff; }
+.import-tip { font-size: 13px; margin: 4px 0 10px; }
+#importFile { margin-bottom: 10px; }
+.import-textarea {
+  width: 100%;
+  min-height: 100px;
+  padding: 10px 12px;
+  border: 1.5px solid #e5e7eb;
+  border-radius: var(--radius-button);
+  font-size: 14px;
+  resize: vertical;
+  margin-bottom: 12px;
+}
+.notice {
+  padding: 10px 12px;
+  border-radius: var(--radius-button);
+  background: #ecfdf5;
+  color: #047857;
+  margin-bottom: 16px;
+  font-size: 14px;
+}
