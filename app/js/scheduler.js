@@ -206,3 +206,40 @@ export async function bumpCheckin(field, delta = 1, date = todayStr()) {
   await put('checkins', row);
   return row;
 }
+
+/* ==================== 连续打卡 streak（M3） ==================== */
+
+/** 日期串平移（YYYY-MM-DD ± N 天），纯函数 */
+export function shiftDay(dateStr, delta) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + delta);
+  return todayStr(d);
+}
+
+/**
+ * 计算连续打卡天数（纯函数，Node 可测）。
+ * @param {Iterable<string>} dates 有打卡的日期串（YYYY-MM-DD）
+ * @param {string} today 基准日，默认今天
+ * 今天尚未打卡时从昨天往前数——streak 不因「今天还没学」立即清零。
+ */
+export function calcStreak(dates, today = todayStr()) {
+  const set = new Set(dates);
+  let cursor = set.has(today) ? today : shiftDay(today, -1);
+  let streak = 0;
+  while (set.has(cursor)) {
+    streak += 1;
+    cursor = shiftDay(cursor, -1);
+  }
+  return streak;
+}
+
+/** 一行 checkin 是否算「当日打卡」（有实际学习/复习活动） */
+export function isActiveCheckin(row) {
+  return !!row && (row.newLearned > 0 || row.reviewed > 0);
+}
+
+/** 当前连续打卡天数（DB 包装） */
+export async function getStreak() {
+  const rows = await getAll('checkins');
+  return calcStreak(rows.filter(isActiveCheckin).map((r) => r.date));
+}

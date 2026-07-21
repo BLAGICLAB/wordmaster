@@ -10,6 +10,7 @@ import {
 } from './db.js';
 import {
   getTodayTask, markLearned, recordAnswer, bumpCheckin, createProgress,
+  getStreak, todayStr, shiftDay, isActiveCheckin, MASTERED_STAGE,
 } from './scheduler.js';
 import { speak } from './speech.js';
 import { parseImportText } from './importer.js';
@@ -53,7 +54,7 @@ export async function renderRoute(route, container) {
   if (seg[0] === 'books' && seg[1]) {
     return renderPlaceholder(container, '词书详情', '词书详情页（分组/搜索/状态标记）将于 M5 实现');
   }
-  if (path === '/stats') return renderPlaceholder(container, '统计', '统计页将于 M3 实现');
+  if (path === '/stats') return renderStats(container);
   if (path === '/settings') return renderPlaceholder(container, '我的', '设置页将于 M4 实现');
   return renderToday(container);
 }
@@ -99,11 +100,14 @@ async function renderToday(container) {
     renderNoBook(container, '今日');
     return;
   }
-  const task = await getTodayTask(book.id);
+  const [task, streak] = await Promise.all([getTodayTask(book.id), getStreak()]);
   container.innerHTML = `
     <div class="home-header">
-      <!-- M4：此处补充等级称号 + XP 进度条 + streak 火焰（§4.3-A、§6） -->
-      <div class="home-sub">当前词书</div>
+      <!-- M4：此处补充等级称号 + XP 进度条（§4.3-A、§6） -->
+      <div class="home-topline">
+        <span class="home-sub">当前词书</span>
+        <span class="streak-flame" title="连续打卡">🔥 ${streak} 天</span>
+      </div>
       <div class="home-book">${escapeHtml(book.name)}</div>
     </div>
     <div class="card">
@@ -303,6 +307,7 @@ async function runStudySession(container, queue, allWords, autoSpeak) {
     await bumpCheckin('newLearned', 1);
   }
   if (!container.isConnected) return;
+  if (await celebrateIfDone(container)) return; // 今日任务全部完成 → 彩带 + 打卡成功
   container.innerHTML = `
     <h1 class="page-title">学习</h1>
     <div class="card study-card">
@@ -351,7 +356,8 @@ async function runReviewSession(container, queue, allWords) {
     await bumpCheckin(ok ? 'correct' : 'wrong', 1);
   }
   if (!container.isConnected) return;
-  // 队列清空 → 回今日页（§5）。M3 在此替换为全屏彩带 + 「打卡成功」卡（§4.3-C）
+  // 队列清空 → 若今日任务全部完成则触发打卡庆祝（§4.3-C），否则回今日页（§5）
+  if (await celebrateIfDone(container)) return;
   container.innerHTML = `
     <h1 class="page-title">复习</h1>
     <div class="card study-card">
@@ -363,6 +369,93 @@ async function runReviewSession(container, queue, allWords) {
   setTimeout(() => {
     if (container.isConnected) location.hash = '#/';
   }, 1500);
+}
+
+/* ==================== 打卡庆祝（M3，§3 / §4.3-C） ==================== */
+
+/**
+ * 会话结束后检查今日任务：新学与到期复习均清空 → 全屏彩带 + 「打卡成功」卡。
+ * @returns {Promise<boolean>} 是否已展示庆祝层
+ */
+async function celebrateIfDone(container) {
+  const book = await getActiveBook();
+  if (!book) return false;
+  const task = await getTodayTask(book.id);
+  if (task.newWords.length > 0 || task.reviews.length > 0) return false;
+  showCheckinCelebration(container);
+  return true;
+}
+
+/** 全屏彩带动画（纯 CSS 实现，不引库，§4.3-C）+ 「打卡成功」卡 */
+function showCheckinCelebration(container) {
+  const colors = ['#0d9488', '#f59e0b', '#22c55e', '#ef4444', '#3b82f6', '#ec4899'];
+  const pieces = Array.from({ length: 60 }, (_, i) => {
+    const left = (Math.random() * 100).toFixed(1);
+    const delay = (Math.random() * 0.8).toFixed(2);
+    const duration = (2.2 + Math.random() * 1.6).toFixed(2);
+    const color = colors[i % colors.length];
+    const w = 6 + Math.round(Math.random() * 6);
+    const h = w + 4 + Math.round(Math.random() * 6);
+    return `<span class="confetti-piece" style="left:${left}%;width:${w}px;height:${h}px;background:${color};animation-delay:${delay}s;animation-duration:${duration}s"></span>`;
+  }).join('');
+  container.innerHTML = `
+    <div class="celebration">
+      <div class="confetti" aria-hidden="true">${pieces}</div>
+      <div class="card checkin-card">
+        <div class="empty-icon">🎉</div>
+        <h2 class="checkin-title">打卡成功</h2>
+        <p class="text-secondary">今日任务已全部完成，明天也要继续哦</p>
+        <a class="btn btn-primary btn-block" href="#/">返回今日</a>
+      </div>
+    </div>
+  `;
+}
+
+/* ==================== 统计页（M3：打卡日历 / 累计学习 / 掌握 / 今日正确率；徽章墙 M4、错词本 M6 追加） ==================== */
+
+async function renderStats(container) {
+  const [checkins, progressAll, streak] = await Promise.all([
+    getAll('checkins'),
+    getAll('progress'),
+    getStreak(),
+  ]);
+  const learned = progressAll.filter((p) => !p.isNew).length;
+  const mastered = progressAll.filter((p) => p.stage >= MASTERED_STAGE).length;
+  const todayRow = checkins.find((c) => c.date === todayStr());
+  const answered = todayRow ? todayRow.correct + todayRow.wrong : 0;
+  const accuracy = answered > 0 ? Math.round((todayRow.correct / answered) * 100) : null;
+
+  // 打卡日历：近 30 天，有学习/复习活动的日期高亮（§5）
+  const activeDates = new Set(checkins.filter(isActiveCheckin).map((c) => c.date));
+  const today = todayStr();
+  const calHtml = Array.from({ length: 30 }, (_, i) => {
+    const d = shiftDay(today, i - 29);
+    const cls = ['cal-day'];
+    if (activeDates.has(d)) cls.push('active');
+    if (d === today) cls.push('today');
+    return `<div class="${cls.join(' ')}" title="${d}">${Number(d.slice(8))}</div>`;
+  }).join('');
+
+  const stat = (num, label) => `
+    <div class="card stat-card">
+      <div class="stat-num">${num}</div>
+      <div class="stat-label">${label}</div>
+    </div>`;
+
+  container.innerHTML = `
+    <h1 class="page-title">统计</h1>
+    <div class="card">
+      <h2 class="card-title">打卡日历（近 30 天）</h2>
+      <div class="cal-grid">${calHtml}</div>
+    </div>
+    <div class="stat-grid">
+      ${stat(`🔥 ${streak}`, '连续打卡（天）')}
+      ${stat(learned, '累计学习（词）')}
+      ${stat(mastered, '已掌握（词）')}
+      ${stat(accuracy == null ? '—' : `${accuracy}%`, '今日正确率')}
+    </div>
+    <!-- M4：徽章墙（§4.3-B）；M6：错词本（§4.6） -->
+  `;
 }
 
 /* ==================== 词书页（M2 基础版：列表 + 设为当前 + 删除 + 临时导入；进度环 M4、详情 M5） ==================== */

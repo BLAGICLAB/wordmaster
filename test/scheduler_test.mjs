@@ -3,7 +3,8 @@
  * 运行：node test/scheduler_test.mjs
  * 覆盖：新学 → stage=0；答对 stage 递增与 nextReviewAt；stage 6 答对 → 7 已掌握；
  *       答错降级 / wrongCount+1 / streak 清零；150 到期词 + cap 100 → 队列恰为 100；
- *       易错词置顶与组内到期升序；新学选词的 dailyNew 上限与 seq 顺序。
+ *       易错词置顶与组内到期升序；新学选词的 dailyNew 上限与 seq 顺序；
+ *       M3 追加：calcStreak 连续打卡 / shiftDay 跨月 / isActiveCheckin。
  */
 import {
   INTERVALS,
@@ -14,6 +15,9 @@ import {
   applyAnswer,
   selectDueReviews,
   selectNewWords,
+  calcStreak,
+  shiftDay,
+  isActiveCheckin,
 } from '../app/js/scheduler.js';
 
 let passed = 0;
@@ -148,6 +152,22 @@ check('已学词被排除', !selAll.some((w) => w.id === 3));
 check('seq 顺序正确', selAll.map((w) => w.id).join(',') === '2,1,4');
 const selObj = selectNewWords(words, { 3: { wordId: 3, isNew: false } }, 10);
 eq('progressMap 兼容普通对象', selObj.length, 3);
+
+// ---------- 连续打卡 streak（M3） ----------
+console.log('calcStreak：连续打卡计算');
+const TODAY = '2026-07-21';
+eq('shiftDay 平移 -1', shiftDay(TODAY, -1), '2026-07-20');
+eq('shiftDay 跨月', shiftDay('2026-07-01', -1), '2026-06-30');
+const d7 = Array.from({ length: 7 }, (_, i) => shiftDay(TODAY, -i)); // 今天起连续 7 天
+eq('今天已打卡连续 7 天', calcStreak(d7, TODAY), 7);
+eq('今天未打卡从昨天起算', calcStreak(d7.slice(1), TODAY), 6);
+eq('中间断档只算最近连续段', calcStreak([...d7.slice(0, 3), ...d7.slice(5)], TODAY), 3);
+eq('昨天也没打卡 streak=0', calcStreak(d7.slice(2), TODAY), 0);
+eq('无打卡记录 streak=0', calcStreak([], TODAY), 0);
+check('isActiveCheckin 有学习算打卡', isActiveCheckin({ date: TODAY, newLearned: 1, reviewed: 0, correct: 0, wrong: 0 }));
+check('isActiveCheckin 有复习算打卡', isActiveCheckin({ date: TODAY, newLearned: 0, reviewed: 2, correct: 1, wrong: 1 }));
+check('isActiveCheckin 全零不算打卡', !isActiveCheckin({ date: TODAY, newLearned: 0, reviewed: 0, correct: 0, wrong: 0 }));
+check('isActiveCheckin 空行不算打卡', !isActiveCheckin(null));
 
 // ---------- 汇总 ----------
 console.log(`\n结果：${passed} 通过，${failed} 失败`);
