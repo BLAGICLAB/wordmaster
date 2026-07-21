@@ -6,12 +6,12 @@
  */
 
 import {
-  getAll, getAllByIndex, add, del, bulkAdd, bulkPut, getSetting, setSetting,
+  getAll, getAllByIndex, get, add, del, bulkAdd, bulkPut, getSetting, setSetting,
   clear, STORE_NAMES,
 } from './db.js';
 import {
   getTodayTask, markLearned, recordAnswer, bumpCheckin, createProgress,
-  getStreak, todayStr, shiftDay, isActiveCheckin, MASTERED_STAGE,
+  getStreak, todayStr, shiftDay, isActiveCheckin, MASTERED_STAGE, WRONG_PIN_THRESHOLD,
 } from './scheduler.js';
 import {
   XP_RULES, BADGES, levelForXP, awardXP, awardDailyDone, awardStreakMilestone, checkBadges,
@@ -56,22 +56,10 @@ export async function renderRoute(route, container) {
   if (path === '/study') return renderStudy(container);
   if (path === '/review') return renderReview(container);
   if (path === '/books') return renderBooks(container);
-  if (seg[0] === 'books' && seg[1]) {
-    return renderPlaceholder(container, '词书详情', '词书详情页（分组/搜索/状态标记）将于 M5 实现');
-  }
+  if (seg[0] === 'books' && seg[1]) return renderBookDetail(container, Number(seg[1]));
   if (path === '/stats') return renderStats(container);
   if (path === '/settings') return renderSettings(container);
   return renderToday(container);
-}
-
-function renderPlaceholder(container, title, note) {
-  container.innerHTML = `
-    <h1 class="page-title">${title}</h1>
-    <div class="empty-state">
-      <div class="empty-icon">🚧</div>
-      <p class="text-secondary">${note}</p>
-    </div>
-  `;
 }
 
 /** 取当前词书：activeBookId 失效时回退到第一本并写回设置；无词书返回 null */
@@ -672,6 +660,244 @@ async function deleteBook(bookId, activeBookId) {
   await Promise.all(words.flatMap((w) => [del('words', w.id), del('progress', w.id)]));
   await del('books', bookId);
   if (activeBookId === bookId) await setSetting('activeBookId', null);
+}
+
+/* ==================== 词书详情页（M5，§5 #/books/:id） ==================== */
+
+/** 词书单词 status 判定：灰=未学 / 黄=学习中 / 绿=已掌握 / 红=易错 */
+function wordStatus(p) {
+  if (!p || p.isNew) return 'new';
+  if (p.wrongCount >= WRONG_PIN_THRESHOLD) return 'hard';
+  if (p.stage >= MASTERED_STAGE) return 'mastered';
+  return 'learning';
+}
+
+const STATUS_LABEL = { new: '未学', learning: '学习中', mastered: '已掌握', hard: '易错' };
+
+/** words 按年级/册分组；无任何 grade 的词书直接返回单个无标签分组 */
+function groupWordsByGrade(words) {
+  const anyGrade = words.some((w) => w.grade);
+  if (!anyGrade) return [{ label: '', words: [...words] }];
+  const map = new Map();
+  const noGrade = [];
+  for (const w of words) {
+    if (w.grade) {
+      if (!map.has(w.grade)) map.set(w.grade, []);
+      map.get(w.grade).push(w);
+    } else {
+      noGrade.push(w);
+    }
+  }
+  // 沪教版年级字符串如 "六年级上册(6A)" / "六年级下册(6B)"：字典序恰好匹配年级次序
+  const arr = [...map.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([label, ws]) => ({ label, words: ws }));
+  if (noGrade.length > 0) arr.push({ label: '未分组', words: noGrade });
+  return arr;
+}
+
+/** 按 searchTerm 前缀过滤：word 或 meaning（忽略大小写，§5） */
+function filterByPrefix(words, term) {
+  if (!term) return words;
+  const t = term.toLowerCase();
+  return words.filter((w) =>
+    (w.word && w.word.toLowerCase().startsWith(t))
+    || (w.meaning && w.meaning.toLowerCase().startsWith(t)),
+  );
+}
+
+/** 词书详情：分组浏览 + 前缀搜索 + 状态标记 + 展开详情 + 50/批 + 默写入口 */
+async function renderBookDetail(container, bookId) {
+  const [book, words, progressAll] = await Promise.all([
+    get('books', bookId),
+    getAllByIndex('words', 'bookId', bookId),
+    getAll('progress'),
+  ]);
+  if (!book) {
+    container.innerHTML = `
+      <h1 class="page-title">词书详情</h1>
+      <div class="empty-state">
+        <div class="empty-icon">😵</div>
+        <p>词书不存在或已被删除</p>
+        <a class="btn btn-primary" href="#/books">返回词书列表</a>
+      </div>`;
+    return;
+  }
+
+  const progressMap = new Map(progressAll.map((p) => [p.wordId, p]));
+  const masteredCount = words.reduce((n, w) => {
+    const p = progressMap.get(w.id);
+    return n + (p && p.stage >= MASTERED_STAGE ? 1 : 0);
+  }, 0);
+  const masteryPct = words.length > 0 ? masteredCount / words.length : 0;
+  const groups = groupWordsByGrade(words);
+  const hasGradeGroups = groups.length > 1 || (groups[0] && groups[0].label);
+
+  container.innerHTML = `
+    <h1 class="page-title">${escapeHtml(book.name)} <span class="text-secondary bd-wordcount">${words.length} 词</span></h1>
+    <div class="card bd-summary">
+      ${ringHtml(masteryPct, 56)}
+      <div class="bd-summary-info">
+        <div class="bd-summary-pct">${Math.round(masteryPct * 100)}% <span class="text-secondary bd-summary-label">已掌握</span></div>
+        <div class="text-secondary bd-summary-count">${masteredCount}/${words.length} 词</div>
+        <div class="bd-summary-actions">
+          <button class="btn btn-outline btn-sm" data-act="dictation" type="button">📝 默写练习</button>
+        </div>
+      </div>
+    </div>
+    <div class="card bd-search-card">
+      <input class="spell-input bd-search-input" id="bdSearch" type="search" placeholder="🔍 搜索单词或释义（前缀匹配）" autocomplete="off">
+    </div>
+    <div id="bdGroups"></div>
+  `;
+
+  container.querySelector('[data-act="dictation"]').addEventListener('click', () => {
+    location.hash = `#/dictation/${bookId}`;
+  });
+
+  let searchTerm = '';
+  let debounceTimer = null;
+  const searchInput = container.querySelector('#bdSearch');
+  searchInput.addEventListener('input', (e) => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      searchTerm = e.target.value.trim().toLowerCase();
+      renderGroups();
+    }, 200);
+  });
+
+  /** 单词条目 DOM；展开按需填充详情 */
+  function buildWordItem(w) {
+    const p = progressMap.get(w.id);
+    const status = wordStatus(p);
+    const item = document.createElement('div');
+    item.className = 'word-item';
+    item.dataset.wid = String(w.id);
+    item.innerHTML = `
+      <div class="word-row" data-toggle-wid="${w.id}">
+        <span class="word-status-dot status-${status}" title="${STATUS_LABEL[status]}"></span>
+        <span class="word-spell">${escapeHtml(w.word)}</span>
+        ${w.pos ? `<span class="pos-tag inline">${escapeHtml(w.pos)}</span>` : ''}
+        <span class="word-meaning">${escapeHtml(w.meaning)}</span>
+        <button class="pron-btn-inline" type="button" aria-label="发音">🔊</button>
+      </div>
+      <div class="word-detail" hidden></div>
+    `;
+    const row = item.querySelector('.word-row');
+    const detail = item.querySelector('.word-detail');
+    const pronBtn = item.querySelector('.pron-btn-inline');
+    pronBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      speak(w.word);
+    });
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.pron-btn-inline')) return;
+      if (detail.childElementCount === 0) fillWordDetail(w, p, detail);
+      detail.hidden = !detail.hidden;
+    });
+    return item;
+  }
+
+  function fillWordDetail(w, p, detail) {
+    const nextReview = (p && p.nextReviewAt) ? new Date(p.nextReviewAt).toISOString().slice(0, 10) : '—';
+    const stageLabel = p
+      ? `阶段 ${p.stage}${p.stage >= MASTERED_STAGE ? '（已掌握）' : ''}`
+      : '—';
+    detail.innerHTML = `
+      <div class="detail-row"><span class="text-secondary">学习阶段</span><span>${escapeHtml(stageLabel)}</span></div>
+      <div class="detail-row"><span class="text-secondary">连续答对</span><span>${p ? p.correctStreak : 0}</span></div>
+      <div class="detail-row"><span class="text-secondary">累计答错</span><span>${p ? p.wrongCount : 0}</span></div>
+      <div class="detail-row"><span class="text-secondary">下次复习</span><span>${nextReview}</span></div>
+      <div class="detail-row"><span class="text-secondary">词根拆解</span><span class="morph-cell" data-w="${escapeHtml(w.word)}">…</span></div>
+    `;
+    // M6：调用 morph.js，失败 / 拆不出静默显示 "—"
+    import('./morph.js').then(({ analyzeWord }) => {
+      analyzeWord(w.word).then((parts) => {
+        const cell = detail.querySelector('.morph-cell');
+        if (!cell) return;
+        cell.textContent = (parts && parts.length > 0)
+          ? parts.map((x) => `${x.part}（${x.meaning}）`).join(' + ')
+          : '—';
+      }).catch(() => {
+        const cell = detail.querySelector('.morph-cell');
+        if (cell) cell.textContent = '—';
+      });
+    }).catch(() => {
+      const cell = detail.querySelector('.morph-cell');
+      if (cell) cell.textContent = '—';
+    });
+  }
+
+  /** 单个分组内的列表容器：维护 _all / _shown，点击「显示更多」追加 50 条 */
+  function buildList(filtered) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bd-list';
+    wrap._all = filtered;
+    wrap._shown = 0;
+    if (filtered.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'text-secondary bd-empty';
+      empty.textContent = '无匹配单词';
+      wrap.appendChild(empty);
+      return wrap;
+    }
+    appendBatch(wrap, 50);
+    return wrap;
+  }
+
+  function appendBatch(wrap, n) {
+    const all = wrap._all;
+    const start = wrap._shown;
+    const end = Math.min(start + n, all.length);
+    for (let i = start; i < end; i += 1) {
+      const node = buildWordItem(all[i]);
+      wrap.insertBefore(node, wrap._showMoreBtn || null);
+    }
+    wrap._shown = end;
+    const remaining = all.length - wrap._shown;
+    if (remaining > 0) {
+      let btn = wrap._showMoreBtn;
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.className = 'btn btn-outline btn-block bd-showmore';
+        btn.type = 'button';
+        btn.addEventListener('click', () => appendBatch(wrap, 50));
+        wrap._showMoreBtn = btn;
+        wrap.appendChild(btn);
+      }
+      btn.textContent = `显示更多（还剩 ${remaining} 词）`;
+    } else if (wrap._showMoreBtn) {
+      wrap._showMoreBtn.remove();
+      wrap._showMoreBtn = null;
+    }
+  }
+
+  function renderGroups() {
+    const groupsEl = container.querySelector('#bdGroups');
+    groupsEl.innerHTML = '';
+    groups.forEach((g, gi) => {
+      const filtered = filterByPrefix(g.words, searchTerm);
+      const card = document.createElement('div');
+      card.className = 'card bd-group';
+      card.dataset.gi = String(gi);
+      const head = document.createElement('div');
+      head.className = 'bd-grade-head';
+      head.innerHTML = `<strong class="bd-grade-label">${escapeHtml(g.label || '未分组')}</strong><span class="text-secondary bd-grade-count">${filtered.length} / ${g.words.length} 词</span>`;
+      const body = document.createElement('div');
+      body.className = 'bd-grade-body';
+      // 默认展开第一组；若无年级分组则始终展开
+      const initiallyOpen = hasGradeGroups ? gi === 0 : true;
+      body.style.display = initiallyOpen ? 'block' : 'none';
+      body.appendChild(buildList(filtered));
+      head.addEventListener('click', () => {
+        body.style.display = body.style.display === 'none' ? 'block' : 'none';
+      });
+      card.appendChild(head);
+      card.appendChild(body);
+      groupsEl.appendChild(card);
+    });
+  }
+
+  renderGroups();
 }
 
 /* ==================== 设置页（M4，§5 #/settings 四个分组） ==================== */
