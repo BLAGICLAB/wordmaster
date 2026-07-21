@@ -57,6 +57,10 @@ export async function renderRoute(route, container) {
   if (path === '/review') return renderReview(container);
   if (path === '/books') return renderBooks(container);
   if (seg[0] === 'books' && seg[1]) return renderBookDetail(container, Number(seg[1]));
+  if (seg[0] === 'dictation' && seg[1]) {
+    return renderDictation(container, { bookId: Number(seg[1]), grade: seg[2] ? decodeURIComponent(seg[2]) : null });
+  }
+  if (path === '/mistakes') return renderMistakes(container);
   if (path === '/stats') return renderStats(container);
   if (path === '/settings') return renderSettings(container);
   return renderToday(container);
@@ -177,15 +181,67 @@ function progressHtml(index, total) {
 }
 
 /**
- * 渲染一道测验题：§4.1 题型 1「看词选义」/ 题型 2「看义拼词」随机（M2 仅这两种）。
+ * 渲染一道测验题：§4.1 题型 1「看词选义」/ 题型 2「看义拼词」/ 题型 3「听音辨词」随机。
  * 即时反馈按 §4.3-C：答对绿 + 轻微放大 200ms；答错红抖动 + 展示正确答案 2 秒。
  * @returns {Promise<boolean>} 是否答对
  */
 function askQuiz(container, { word, pool, index, total }) {
-  const type = Math.random() < 0.5 ? 1 : 2;
-  return type === 1
-    ? askChoice(container, word, pool, index, total)
-    : askSpelling(container, word, index, total);
+  const r = Math.random();
+  const type = r < 1 / 3 ? 1 : r < 2 / 3 ? 2 : 3;
+  if (type === 1) return askChoice(container, word, pool, index, total);
+  if (type === 2) return askSpelling(container, word, index, total);
+  return askListenSpell(container, word, index, total);
+}
+
+/** 题型 3：听音辨词（§4.1-3）—— 不显示英文/释义，仅播放发音，用户输入拼写。判定同题型 2。 */
+function askListenSpell(container, word, index, total) {
+  return new Promise((resolve) => {
+    container.innerHTML = `
+      ${progressHtml(index + 1, total)}
+      <div class="card listen-card">
+        <button class="pronounce-btn listen-speak" id="lsSpeak" type="button" aria-label="发音">🔊</button>
+        <p class="text-secondary" style="margin-top:12px;font-size:14px">听音辨词：输入你听到的单词</p>
+      </div>
+      <input class="spell-input" id="spellInput" type="text" placeholder="输入英文拼写"
+             autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+      <button class="btn btn-primary btn-block" id="spellSubmit" type="button">确定</button>
+      <div id="spellFeedback" class="quiz-feedback"></div>
+    `;
+    const input = container.querySelector('#spellInput');
+    const submitBtn = container.querySelector('#spellSubmit');
+    const feedback = container.querySelector('#spellFeedback');
+    const speakBtn = container.querySelector('#lsSpeak');
+    input.focus();
+    speak(word.word); // 进入即播一次（§4.1-3 听音辨词）
+    let done = false;
+    const submit = async () => {
+      if (done) return;
+      done = true;
+      const answer = input.value.trim();
+      const correct = answer.toLowerCase() === word.word.trim().toLowerCase();
+      input.disabled = true;
+      submitBtn.disabled = true;
+      if (correct) {
+        feedback.innerHTML = `<div class="option-btn correct">✓ 回答正确：${escapeHtml(word.word)}</div>`;
+        await wait(500);
+      } else {
+        feedback.innerHTML = `
+          <div class="option-btn wrong">✗ 你的答案：${escapeHtml(answer) || '（空）'}</div>
+          <div class="option-btn correct">正确答案：${escapeHtml(word.word)}</div>
+        `;
+        await wait(2000);
+      }
+      resolve(correct);
+    };
+    submitBtn.addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+    });
+    speakBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      speak(word.word);
+    });
+  });
 }
 
 /** 干扰项：同词书其他词的释义，去重且不含正确释义（§4.1-1；不足 3 个时有几条算几条） */
@@ -472,11 +528,12 @@ function showCheckinCelebration(container, freshBadges = []) {
 /* ==================== 统计页（M3：打卡日历 / 累计学习 / 掌握 / 今日正确率；徽章墙 M4、错词本 M6 追加） ==================== */
 
 async function renderStats(container) {
-  const [checkins, progressAll, streak, unlocked] = await Promise.all([
+  const [checkins, progressAll, streak, unlocked, words] = await Promise.all([
     getAll('checkins'),
     getAll('progress'),
     getStreak(),
     getAll('badges'),
+    getAll('words'),
   ]);
   const learned = progressAll.filter((p) => !p.isNew).length;
   const mastered = progressAll.filter((p) => p.stage >= MASTERED_STAGE).length;
@@ -513,6 +570,10 @@ async function renderStats(container) {
       </div>`;
   }).join('');
 
+  // 错词本（§4.6）
+  const mistakes = buildMistakeList(words, progressAll);
+  const mistakeCard = renderMistakeCardHtml(mistakes);
+
   container.innerHTML = `
     <h1 class="page-title">统计</h1>
     <div class="card">
@@ -529,8 +590,14 @@ async function renderStats(container) {
       <h2 class="card-title">徽章墙</h2>
       <div class="badge-grid">${badgeWall}</div>
     </div>
-    <!-- M6：错词本（§4.6） -->
+    ${mistakeCard}
   `;
+  // 错词发音按钮 + 「立即复习错词」跳转
+  container.querySelectorAll('[data-mistake-speak]').forEach((b) => {
+    b.addEventListener('click', (e) => { e.stopPropagation(); speak(b.dataset.mistakeSpeak); });
+  });
+  const reviewBtn = container.querySelector('#reviewMistakesBtn');
+  if (reviewBtn) reviewBtn.addEventListener('click', () => { location.hash = '#/mistakes'; });
 }
 
 /* ==================== 词书页（M4：列表 + 掌握进度环 + 设为当前 + 删除；导入已移入设置页 §8-2；详情 M5） ==================== */
@@ -590,6 +657,7 @@ async function renderBooks(container, notice = '') {
             ${b.wordCount} 词 · 来源：${b.source === 'builtin' ? '内置' : '导入'}${b.id === activeBookId ? ' · <span class="book-active">当前词书</span>' : ''}
           </div>
           <div class="book-actions">
+            <button class="btn btn-outline btn-sm" type="button" data-act="dict" data-id="${b.id}" title="默写整本书">📝 默写</button>
             ${b.id === activeBookId ? '' : `<button class="btn btn-outline btn-sm" type="button" data-act="use" data-id="${b.id}">设为当前词书</button>`}
             <button class="btn btn-outline btn-sm" type="button" data-act="detail" data-id="${b.id}">详情</button>
             <button class="btn btn-danger btn-sm" type="button" data-act="del" data-id="${b.id}">删除</button>
@@ -614,6 +682,11 @@ async function renderBooks(container, notice = '') {
   container.querySelectorAll('[data-act="detail"]').forEach((btn) => {
     btn.addEventListener('click', () => {
       location.hash = `#/books/${btn.dataset.id}`;
+    });
+  });
+  container.querySelectorAll('[data-act="dict"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      location.hash = `#/dictation/${btn.dataset.id}`;
     });
   });
   container.querySelectorAll('[data-act="del"]').forEach((btn) => {
@@ -881,16 +954,30 @@ async function renderBookDetail(container, bookId) {
       card.dataset.gi = String(gi);
       const head = document.createElement('div');
       head.className = 'bd-grade-head';
-      head.innerHTML = `<strong class="bd-grade-label">${escapeHtml(g.label || '未分组')}</strong><span class="text-secondary bd-grade-count">${filtered.length} / ${g.words.length} 词</span>`;
+      head.innerHTML = `
+        <div class="bd-grade-head-main">
+          <strong class="bd-grade-label">${escapeHtml(g.label || '未分组')}</strong>
+          <span class="text-secondary bd-grade-count">${filtered.length} / ${g.words.length} 词</span>
+        </div>
+        ${g.words.length > 0 ? `<button class="btn btn-outline btn-sm bd-grade-dict" type="button" data-gi="${gi}" title="默写本组">📝</button>` : ''}
+      `;
       const body = document.createElement('div');
       body.className = 'bd-grade-body';
-      // 默认展开第一组；若无年级分组则始终展开
       const initiallyOpen = hasGradeGroups ? gi === 0 : true;
       body.style.display = initiallyOpen ? 'block' : 'none';
       body.appendChild(buildList(filtered));
-      head.addEventListener('click', () => {
+      head.addEventListener('click', (e) => {
+        if (e.target.closest('.bd-grade-dict')) return;
         body.style.display = body.style.display === 'none' ? 'block' : 'none';
       });
+      const dictBtn = head.querySelector('.bd-grade-dict');
+      if (dictBtn) {
+        dictBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const grade = encodeURIComponent(g.label || '');
+          location.hash = `#/dictation/${bookId}/${grade}`;
+        });
+      }
       card.appendChild(head);
       card.appendChild(body);
       groupsEl.appendChild(card);
@@ -898,6 +985,275 @@ async function renderBookDetail(container, bookId) {
   }
 
   renderGroups();
+}
+
+/* ==================== 默写模式（M6，§4.5） ==================== */
+
+/**
+ * 逐字母即时反馈的默写题（§4.5）：发音 + 释义，用户输入并实时看到字母错对颜色。
+ * 判定与拼写题一致（忽略大小写 / 首尾空格）。
+ * @returns {Promise<boolean>}
+ */
+function askDictation(container, word, index, total) {
+  return new Promise((resolve) => {
+    container.innerHTML = `
+      ${progressHtml(index + 1, total)}
+      <div class="card dictation-card">
+        <button class="pronounce-btn dictation-speak" id="dSpeak" type="button" aria-label="发音">🔊</button>
+        <div class="dictation-meaning">${escapeHtml(word.meaning)}</div>
+        ${word.pos ? `<div class="text-secondary dictation-pos">${escapeHtml(word.pos)}</div>` : ''}
+      </div>
+      <input class="spell-input" id="dInput" type="text" placeholder="输入英文拼写"
+             autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
+      <div class="dictation-preview" id="dPreview" aria-live="polite"></div>
+      <button class="btn btn-primary btn-block" id="dSubmit" type="button">确定</button>
+      <div id="dFeedback" class="quiz-feedback"></div>
+    `;
+    const input = container.querySelector('#dInput');
+    const submitBtn = container.querySelector('#dSubmit');
+    const preview = container.querySelector('#dPreview');
+    const feedback = container.querySelector('#dFeedback');
+    const speakBtn = container.querySelector('#dSpeak');
+    const target = word.word;
+    const updatePreview = () => {
+      const typed = input.value;
+      if (!typed) {
+        preview.innerHTML = '<span class="text-secondary dictation-hint">逐字母对错将实时标色</span>';
+        return;
+      }
+      preview.innerHTML = [...typed].map((c, i) => {
+        const t = target[i] || '';
+        const ok = c.toLowerCase() === t.toLowerCase();
+        return `<span class="dict-char ${ok ? 'correct' : 'wrong'}">${escapeHtml(c)}</span>`;
+      }).join('');
+    };
+    input.addEventListener('input', updatePreview);
+    updatePreview();
+    speakBtn.addEventListener('click', (e) => { e.stopPropagation(); speak(target); });
+    speak(target); // 进入即播一次
+    input.focus();
+    let done = false;
+    const submit = async () => {
+      if (done) return;
+      done = true;
+      const answer = input.value.trim();
+      const correct = answer.toLowerCase() === target.trim().toLowerCase();
+      input.disabled = true;
+      submitBtn.disabled = true;
+      if (correct) {
+        feedback.innerHTML = `<div class="option-btn correct">✓ 回答正确：${escapeHtml(target)}</div>`;
+        await wait(500);
+      } else {
+        feedback.innerHTML = `
+          <div class="option-btn wrong">✗ 你的答案：${escapeHtml(answer) || '（空）'}</div>
+          <div class="option-btn correct">正确答案：${escapeHtml(target)}</div>
+        `;
+        await wait(2000);
+      }
+      resolve(correct);
+    };
+    submitBtn.addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  });
+}
+
+/** 默写单次会话：逐词 askDictation；错词先记到结果页，「全部加入复习」一键 push（§4.5） */
+async function runDictationSession(container, queue) {
+  const total = queue.length;
+  const wrong = [];
+  let correct = 0;
+  for (let i = 0; i < queue.length; i += 1) {
+    if (!container.isConnected) return;
+    const word = queue[i];
+    const ok = await askDictation(container, word, i, total);
+    if (ok) correct += 1;
+    else wrong.push(word);
+  }
+  if (!container.isConnected) return;
+  renderDictationResult(container, { total, correct, wrong });
+}
+
+/** 默写结果页：准确率 / 错词列表 + 发音 / 「全部加入复习」一键 push（§4.5） */
+async function renderDictationResult(container, { total, correct, wrong }) {
+  const accuracy = total > 0 ? Math.round((correct / total) * 100) : 0;
+  const wrongHtml = wrong.length === 0
+    ? '<p class="text-secondary" style="text-align:center;padding:14px">本次无错词🎉</p>'
+    : wrong.map((w) => `
+        <div class="word-row mistake-row" style="cursor:default">
+          <span class="word-status-dot status-hard" title="本次默写错词"></span>
+          <span class="word-spell">${escapeHtml(w.word)}</span>
+          ${w.pos ? `<span class="pos-tag inline">${escapeHtml(w.pos)}</span>` : ''}
+          <span class="word-meaning">${escapeHtml(w.meaning)}</span>
+          <button class="pron-btn-inline" data-speak="${escapeHtml(w.word)}" type="button" aria-label="发音">🔊</button>
+        </div>
+      `).join('');
+  let added = false;
+  container.innerHTML = `
+    <h1 class="page-title">默写结果</h1>
+    <div class="card dictation-result">
+      <div class="stat-num" style="font-size:36px;color:var(--color-primary)">${accuracy}%</div>
+      <div class="text-secondary" style="margin:6px 0 4px">正确 ${correct} / ${total}</div>
+      <div class="text-secondary" style="font-size:13px">错词 ${wrong.length} 个</div>
+    </div>
+    <div class="card">
+      <h2 class="card-title">错词列表</h2>
+      <div class="bd-list">${wrongHtml}</div>
+      <button class="btn btn-primary btn-block" id="addAllReviewBtn" type="button"
+              ${wrong.length === 0 ? 'disabled' : ''}
+              style="margin-top:14px">
+        📚 全部加入复习（错词 ${wrong.length}）
+      </button>
+      <div id="addAllMsg" class="text-secondary" style="text-align:center;font-size:13px;margin-top:8px"></div>
+    </div>
+    <div class="btn-stack">
+      <a class="btn btn-outline btn-block" href="#/books">返回词书</a>
+    </div>
+  `;
+  container.querySelectorAll('[data-speak]').forEach((b) => {
+    b.addEventListener('click', (e) => { e.stopPropagation(); speak(b.dataset.speak); });
+  });
+  const addAllBtn = container.querySelector('#addAllReviewBtn');
+  const addMsg = container.querySelector('#addAllMsg');
+  if (addAllBtn) {
+    addAllBtn.addEventListener('click', async () => {
+      if (added) return;
+      added = true;
+      const now = Date.now();
+      for (const w of wrong) await recordAnswer(w.id, false, now);
+      addAllBtn.textContent = `✓ 已加入 ${wrong.length} 错词到复习队列`;
+      addAllBtn.disabled = true;
+      addMsg.textContent = '错词已加入今日复习队列（10 分钟后可复习）';
+    });
+  }
+}
+
+/** 默写页面（§5/#/dictation/:bookId 或 /:bookId/:grade）：从词书取词与默认限制 30 词 */
+async function renderDictation(container, { bookId, grade }) {
+  const [book, words] = await Promise.all([
+    get('books', bookId),
+    getAllByIndex('words', 'bookId', bookId),
+  ]);
+  if (!book || words.length === 0) {
+    container.innerHTML = `
+      <h1 class="page-title">默写练习</h1>
+      <div class="empty-state">
+        <div class="empty-icon">📝</div>
+        <p>没有可默写的单词</p>
+        <a class="btn btn-primary" href="#/books">返回词书</a>
+      </div>`;
+    return;
+  }
+  const filtered = grade ? words.filter((w) => w.grade === grade) : words;
+  const limit = 30;
+  const queue = (filtered.length > limit ? shuffle(filtered).slice(0, limit) : shuffle(filtered));
+  if (queue.length === 0) {
+    container.innerHTML = `
+      <h1 class="page-title">默写练习</h1>
+      <div class="empty-state">
+        <div class="empty-icon">📝</div>
+        <p>该分组下没有单词</p>
+        <a class="btn btn-primary" href="#/books/${bookId}">返回词书详情</a>
+      </div>`;
+    return;
+  }
+  const scope = grade ? `${escapeHtml(book.name)} · ${escapeHtml(grade)}` : escapeHtml(book.name);
+  container.innerHTML = `
+    <h1 class="page-title">默写练习 <span class="text-secondary" style="font-size:14px">${queue.length} 词</span></h1>
+    <p class="text-secondary" style="margin:-8px 0 12px">词书：${scope}</p>
+  `;
+  await runDictationSession(container, queue);
+}
+
+/* ==================== 错词本 / 错词复习（M6，§4.6） ==================== */
+
+/** 纯函数：取全部错词集 word+progress供列表；按 wrongCount 降序，过滤 wrongCount >= 1。 */
+function buildMistakeList(words, progressAll) {
+  const byId = new Map(progressAll.map((p) => [p.wordId, p]));
+  return words
+    .filter((w) => byId.has(w.id))
+    .map((w) => ({ w, p: byId.get(w.id) }))
+    .filter((x) => x.p && x.p.wrongCount >= 1)
+    .sort((a, b) => b.p.wrongCount - a.p.wrongCount);
+}
+
+/** 错词本卡片嵌入 #/stats（§4.6） */
+function renderMistakeCardHtml(mistakes) {
+  if (mistakes.length === 0) {
+    return `
+      <div class="card">
+        <h2 class="card-title">错词本</h2>
+        <div class="empty-state" style="padding:24px 12px">
+          <div class="empty-icon">✅</div>
+          <p style="font-size:14px">目前没有错词</p>
+        </div>
+      </div>`;
+  }
+  const list = mistakes.slice(0, 30).map(({ w, p }) => `
+    <div class="word-row mistake-row" style="cursor:default">
+      <span class="word-status-dot status-${wordStatus(p)}" title="${escapeHtml(STATUS_LABEL[wordStatus(p)])}"></span>
+      <span class="word-spell">${escapeHtml(w.word)}</span>
+      ${w.pos ? `<span class="pos-tag inline">${escapeHtml(w.pos)}</span>` : ''}
+      <span class="word-meaning">${escapeHtml(w.meaning)}</span>
+      <span class="mistake-count" title="答错 ${p.wrongCount} 次">× ${p.wrongCount}</span>
+      <button class="pron-btn-inline" data-mistake-speak="${escapeHtml(w.word)}" type="button" aria-label="发音">🔊</button>
+    </div>
+  `).join('');
+  return `
+    <div class="card mistake-card">
+      <div class="mistake-card-head">
+        <h2 class="card-title" style="margin:0">错词本</h2>
+        <span class="text-secondary" style="font-size:13px">${mistakes.length} 词</span>
+      </div>
+      <div class="bd-list" style="margin-top:10px">${list}</div>
+      <button class="btn btn-primary btn-block" id="reviewMistakesBtn" type="button" style="margin-top:12px">立即复习错词</button>
+    </div>
+  `;
+}
+
+/** 错词本逐题复习页（§4.6 #/mistakes）：临时队列，不占用 dailyNew */
+async function renderMistakes(container) {
+  const [words, progressAll] = await Promise.all([getAll('words'), getAll('progress')]);
+  const mistakes = buildMistakeList(words, progressAll);
+  if (mistakes.length === 0) {
+    container.innerHTML = `
+      <h1 class="page-title">错词复习</h1>
+      <div class="empty-state">
+        <div class="empty-icon">✅</div>
+        <p>目前没有错词</p>
+        <a class="btn btn-primary" href="#/stats">返回统计</a>
+      </div>`;
+    return;
+  }
+  const queue = mistakes.map((m) => m.w);
+  await runQuizSession(container, queue, words, { title: '错词复习', backHash: '#/stats', isMistakes: true });
+}
+
+/** 错词本与常规复习复用的逐题会话引擎（入参同 runReviewSession）。opts.isMistakes 区分错词本路径 */
+async function runQuizSession(container, queue, allWords, opts = {}) {
+  const total = queue.length;
+  let correct = 0;
+  for (let i = 0; i < queue.length; i += 1) {
+    if (!container.isConnected) return;
+    const word = queue[i];
+    const ok = await askQuiz(container, { word, pool: allWords, index: i, total });
+    correct += ok ? 1 : 0;
+    await recordAnswer(word.id, ok, Date.now());
+    // 作为复习活动计入打卡与 XP（§4.6 错词本复习依然走复习棋路）
+    await bumpCheckin('reviewed', 1);
+    await bumpCheckin(ok ? 'correct' : 'wrong', 1);
+    await gainXP(ok ? XP_RULES.reviewRight : XP_RULES.reviewWrong);
+  }
+  await notifyBadges();
+  if (!container.isConnected) return;
+  const accuracy = total > 0 ? Math.round((correct / total) * 100) : 0;
+  container.innerHTML = `
+    <h1 class="page-title">${opts.title || '复习'}</h1>
+    <div class="card study-card">
+      <div class="empty-icon">${correct === total ? '🎉' : '📈'}</div>
+      <p class="session-done">本轮完成 ${total} 题 · 正确 ${correct}（${accuracy}%）</p>
+      <a class="btn btn-primary btn-block" href="${opts.backHash || '#/'}">完成</a>
+    </div>
+  `;
 }
 
 /* ==================== 设置页（M4，§5 #/settings 四个分组） ==================== */

@@ -119,6 +119,22 @@ const jsFiles = [
   'app/js/speech.js',
   'app/js/pages.js',
 ];
+
+// ===== M6 附加：morph 模块的 node --check 与纯函数核心抽查 =====
+// （morph.js 已在 jsFiles 列表内做语法检查；这里再验证类型/数量、包含 unhappy/pollution 的拆解能力）
+import { splitWord } from '../app/js/morph.js';
+import { readFileSync as _rfs } from 'node:fs';
+import { fileURLToPath as _f } from 'node:url';
+import { dirname as _d, join as _j } from 'node:path';
+const _R = _d(_f(import.meta.url));
+const bigDict = JSON.parse(_rfs(_j(_R, '..', 'app', 'data', 'roots.json'), 'utf8'));
+check('roots.json 包含 root happy', bigDict.roots.some((r) => r.part === 'happy'));
+check('roots.json 包含 root pollut', bigDict.roots.some((r) => r.part === 'pollut'));
+check('roots.json 含 prefix un', bigDict.prefixes.some((p) => p.part === 'un'));
+check('roots.json 含 suffix ion', bigDict.suffixes.some((s) => s.part === 'ion'));
+const _u = splitWord('unhappy', bigDict);
+check('真实词根表也能拆 unhappy',
+  Array.isArray(_u) && _u[0].part === 'un' && _u.some((p) => p.part === 'happy'));
 for (const f of jsFiles) {
   let ok = true;
   try {

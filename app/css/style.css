@@ -597,3 +597,79 @@ body {
 .bd-showmore { margin-top: 12px; }
 .bd-empty { text-align: center; font-size: 13px; padding: 8px 0; }
 
+/* ---------- M6：默写模式 / 听音辨词 / 错词本 ---------- */
+.listen-card { text-align: center; padding: 28px 16px; }
+.listen-speak {
+  width: 64px;
+  height: 64px;
+  font-size: 28px;
+}
+
+.dictation-card { text-align: center; padding: 18px 16px 20px; }
+.dictation-speak {
+  width: 56px;
+  height: 56px;
+  font-size: 24px;
+}
+.dictation-meaning {
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 10px;
+}
+.dictation-pos { font-size: 13px; margin-top: 2px; }
+.dictation-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 12px;
+  min-height: 34px;
+  padding: 8px;
+  background: var(--color-bg);
+  border-radius: var(--radius-button);
+}
+.dictation-hint { font-size: 13px; }
+.dict-char {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+}
+.dict-char.correct { background: var(--color-success); color: #fff; }
+.dict-char.wrong { background: var(--color-danger); color: #fff; }
+
+.dictation-result { text-align: center; padding: 24px 16px; }
+
+.mistake-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.mistake-row { grid-template-columns: 14px auto auto 1fr auto auto; }
+.mistake-count {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #fef2f2;
+  color: var(--color-danger);
+  font-size: 12px;
+  font-weight: 600;
+  flex: none;
+}
+.bd-grade-head-main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+.bd-grade-dict {
+  padding: 6px 10px;
+  font-size: 16px;
+  flex: none;
+}
+
