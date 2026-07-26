@@ -4,7 +4,7 @@
  */
 import { renderRoute } from './pages.js';
 
-export const APP_VERSION = 'v2.0.0';
+export const APP_VERSION = 'v2.1.0';
 
 function currentRoute() {
   const hash = location.hash.replace(/^#/, '') || '/';
@@ -12,8 +12,9 @@ function currentRoute() {
 }
 
 function highlightTab(route) {
-  // 词书详情 #/books/:id 归入 #/books
-  const base = '/' + (route.split('/')[1] || '');
+  // #/books/:id 归入 #/books；#/study（新单词学习流）归入 #/今日
+  const seg = route.split('/')[1] || '';
+  const base = seg === 'study' ? '/' : '/' + seg;
   document.querySelectorAll('.tabbar-item').forEach((item) => {
     item.classList.toggle('active', item.dataset.route === base);
   });

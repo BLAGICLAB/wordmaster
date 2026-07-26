@@ -3,7 +3,7 @@
  * 缓存版本号与 main.js 的 APP_VERSION 同步，发版一并修改。
  */
 
-const APP_VERSION = 'v2.0.0';
+const APP_VERSION = 'v2.1.0';
 const CACHE_NAME = `wordmaster-${APP_VERSION}`;
 
 const APP_SHELL = [

@@ -54,7 +54,7 @@ export async function renderRoute(route, container) {
 
   if (path === '/') return renderToday(container);
   if (path === '/study') return renderStudy(container);
-  if (path === '/review') return renderReview(container);
+  if (path === '/quiz') return renderQuiz(container);
   if (path === '/books') return renderBooks(container);
   if (seg[0] === 'books' && seg[1]) return renderBookDetail(container, Number(seg[1]));
   if (seg[0] === 'dictation' && seg[1]) {
@@ -119,8 +119,8 @@ async function renderToday(container) {
       <p class="task-counts">今日任务：<strong>新学 ${task.newWords.length}</strong> 词 · <strong>复习 ${task.reviews.length}</strong> 词</p>
     </div>
     <div class="btn-stack">
-      <a class="btn btn-primary btn-block" href="#/study">开始新学（${task.newWords.length}）</a>
-      <a class="btn btn-outline btn-block" href="#/review">开始复习（${task.reviews.length}）</a>
+      <a class="btn btn-primary btn-block" href="#/study">学习新单词（${task.newWords.length}）</a>
+      <a class="btn btn-outline btn-block" href="#/quiz">开始测验（${task.reviews.length}）</a>
     </div>
   `;
 }
@@ -423,7 +423,7 @@ async function runStudySession(container, queue, allWords, autoSpeak) {
 
 /* ==================== 复习页（§5 #/review） ==================== */
 
-async function renderReview(container) {
+async function renderQuiz(container) {
   const book = await getActiveBook();
   if (!book) {
     renderNoBook(container, '复习');
@@ -667,10 +667,10 @@ async function renderBooks(container, notice = '') {
     `).join('');
 
   container.innerHTML = `
-    <h1 class="page-title">词书</h1>
+    <h1 class="page-title">词库</h1>
     ${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ''}
     ${listHtml}
-    ${books.length > 0 ? '<p class="text-secondary import-goto">要导入新词书？请到 <a href="#/settings">我的 → 词书管理</a></p>' : ''}
+    ${books.length > 0 ? '<p class="text-secondary import-goto">要导入新词书？请到 <a href="#/settings">设置 → 词书管理</a></p>' : ''}
   `;
 
   container.querySelectorAll('[data-act="use"]').forEach((btn) => {
@@ -787,11 +787,11 @@ async function renderBookDetail(container, bookId) {
   ]);
   if (!book) {
     container.innerHTML = `
-      <h1 class="page-title">词书详情</h1>
+      <h1 class="page-title">词库详情</h1>
       <div class="empty-state">
         <div class="empty-icon">😵</div>
         <p>词书不存在或已被删除</p>
-        <a class="btn btn-primary" href="#/books">返回词书列表</a>
+        <a class="btn btn-primary" href="#/books">返回词库列表</a>
       </div>`;
     return;
   }
@@ -1106,7 +1106,7 @@ async function renderDictationResult(container, { total, correct, wrong }) {
       <div id="addAllMsg" class="text-secondary" style="text-align:center;font-size:13px;margin-top:8px"></div>
     </div>
     <div class="btn-stack">
-      <a class="btn btn-outline btn-block" href="#/books">返回词书</a>
+      <a class="btn btn-outline btn-block" href="#/books">返回词库</a>
     </div>
   `;
   container.querySelectorAll('[data-speak]').forEach((b) => {
@@ -1152,7 +1152,7 @@ async function renderDictation(container, { bookId, grade }) {
       <div class="empty-state">
         <div class="empty-icon">📝</div>
         <p>该分组下没有单词</p>
-        <a class="btn btn-primary" href="#/books/${bookId}">返回词书详情</a>
+        <a class="btn btn-primary" href="#/books/${bookId}">返回词库详情</a>
       </div>`;
     return;
   }
@@ -1269,7 +1269,7 @@ async function renderSettings(container, notice = '') {
   ]);
 
   container.innerHTML = `
-    <h1 class="page-title">我的</h1>
+    <h1 class="page-title">设置</h1>
     ${notice ? `<div class="notice">${escapeHtml(notice)}</div>` : ''}
 
     <div class="card">
